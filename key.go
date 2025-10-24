@@ -1,8 +1,10 @@
 package evmutil
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,9 +23,11 @@ import (
 
 // EncryptPrivateKey encrypts an ethereum private key with password
 // password: user password for encryption
-// privateKeyHex: private key in hex string format (without 0x prefix)
+// privateKeyHex: private key in bytes
 // returns: encrypted data in hex encoding
-func EncryptPrivateKey(password string, privateKeyHex string) (string, error) {
+func EncryptPrivateKey(password string, privateKey []byte) (string, error) {
+	defer clearBytes(privateKey)
+
 	// 1. Generate random salt (16 bytes)
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
@@ -52,16 +56,16 @@ func EncryptPrivateKey(password string, privateKeyHex string) (string, error) {
 	}
 
 	// 6. Encrypt private key
-	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
-	if err != nil {
-		return "", fmt.Errorf("invalid private key format: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, privateKeyBytes, nil)
+	ciphertext := gcm.Seal(nil, nonce, privateKey, nil)
 
 	// 7. Combine: salt(16) + nonce(12) + ciphertext
 	encrypted := append(salt, nonce...)
 	encrypted = append(encrypted, ciphertext...)
+
+	defer clearBytes(encrypted)
+	defer clearBytes(nonce)
+	defer clearBytes(salt)
+	defer clearBytes(key)
 
 	return hex.EncodeToString(encrypted), nil
 }
@@ -70,16 +74,21 @@ func EncryptPrivateKey(password string, privateKeyHex string) (string, error) {
 // password: user password for decryption
 // encryptedHex: encrypted data in hex encoding
 // returns: decrypted private key in hex string format
-func DecryptPrivateKey(password string, encryptedHex string) (string, error) {
+func DecryptPrivateKey(password string, encryptedHex string) ([]byte, error) {
+	defer clearString(&password)
+	defer clearString(&encryptedHex)
+
 	// 1. Decode hex string
 	encrypted, err := hex.DecodeString(encryptedHex)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode hex: %w", err)
+		return nil, fmt.Errorf("failed to decode hex: %w", err)
 	}
+
+	defer clearBytes(encrypted)
 
 	// 2. Minimum required: 16(salt) + 12(nonce) + 16(min ciphertext) = 44 bytes
 	if len(encrypted) < 44 {
-		return "", errors.New("invalid encrypted data format")
+		return nil, errors.New("invalid encrypted data format")
 	}
 
 	// 3. Extract salt and nonce
@@ -90,25 +99,27 @@ func DecryptPrivateKey(password string, encryptedHex string) (string, error) {
 	// 4. Derive key using same parameters
 	key := pbkdf2.Key([]byte(password), salt, 100000, 32, sha256.New)
 
+	defer clearBytes(key)
+
 	// 5. Create AES-256 cipher block
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher block: %w", err)
+		return nil, fmt.Errorf("failed to create cipher block: %w", err)
 	}
 
 	// 6. Use GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
 	// 7. Decrypt
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return "", fmt.Errorf("decryption failed (password may be incorrect): %w", err)
+		return nil, fmt.Errorf("decryption failed (password may be incorrect): %w", err)
 	}
 
-	return hex.EncodeToString(plaintext), nil
+	return plaintext, nil
 }
 
 // SaveEncryptedKey saves encrypted key to file
@@ -254,16 +265,13 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 	privateKeyBytes := crypto.FromECDSA(privateKey)
 	defer clearBytes(privateKeyBytes)
 
-	privateKeyHex := hex.EncodeToString(privateKeyBytes)
-	defer clearString(&privateKeyHex)
-
 	// Get Ethereum address
 	address = crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
 	fmt.Printf("Generated address: %s\n", address)
 
 	// Step 3: Encrypt the private key
 	fmt.Println("Encrypting private key...")
-	encryptedKeyHex, err = EncryptPrivateKey(password, privateKeyHex)
+	encryptedKeyHex, err = EncryptPrivateKey(password, privateKeyBytes)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to encrypt private key: %w", err)
 	}
@@ -271,14 +279,14 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 
 	// Step 4: Verify by decrypting
 	fmt.Println("Verifying encryption...")
-	decryptedKeyHex, err := DecryptPrivateKey(password, encryptedKeyHex)
+	decryptedKeyBytes, err := DecryptPrivateKey(password, encryptedKeyHex)
 	if err != nil {
 		return "", "", fmt.Errorf("verification failed - cannot decrypt: %w", err)
 	}
-	defer clearString(&decryptedKeyHex)
+	defer clearBytes(decryptedKeyBytes)
 
 	// Step 5: Compare decrypted key with original
-	if decryptedKeyHex != privateKeyHex {
+	if !bytes.Equal(decryptedKeyBytes, privateKeyBytes) {
 		return "", "", errors.New("verification failed - decrypted key does not match original")
 	}
 
@@ -287,12 +295,91 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 	return encryptedKeyHex, address, nil
 }
 
-// SignMessageWithDecryptedKey signs a message using decrypted private key
-func SignMessageWithDecryptedKey(privateKeyHex string, message string) (string, error) {
-	// Parse private key
-	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+// ReadEncryptedPrivateKeyFromTerminal reads an encrypted private key from terminal and decrypts it
+// This function:
+// 1. Prompts user to enter the encrypted private key (hex string)
+// 2. Prompts user to enter the password for decryption
+// 3. Decrypts the private key with the password
+// 4. Returns the Ethereum private key object and the corresponding address
+func ReadEncryptedPrivateKeyFromTerminal() (privateKey *ecdsa.PrivateKey, address string, err error) {
+	fmt.Println("=== Decrypt Ethereum Private Key ===")
+
+	// Step 1: Read encrypted private key from user
+	fmt.Print("Enter encrypted private key: ")
+	encryptedKeyBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println() // Print newline after input
+
 	if err != nil {
-		return "", fmt.Errorf("failed to parse private key: %w", err)
+		return nil, "", fmt.Errorf("failed to read encrypted private key: %w", err)
+	}
+
+	// Clear the byte slice immediately after use
+	defer clearBytes(encryptedKeyBytes)
+
+	// Convert to string and clean whitespace
+	encryptedKeyHex := strings.TrimSpace(string(encryptedKeyBytes))
+	defer clearString(&encryptedKeyHex)
+
+	// Validate encrypted key format
+	if err := validateEncryptedKeyFormat(encryptedKeyHex); err != nil {
+		return nil, "", fmt.Errorf("invalid encrypted key format: %w", err)
+	}
+
+	// Step 2: Read password from user
+	password, err := ReadPasswordFromTerminal("Enter password for decryption: ", false)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read password: %w", err)
+	}
+	defer clearString(&password)
+
+	// Step 3: Decrypt the private key
+	fmt.Println("Decrypting private key...")
+	privateKeyBytes, err := DecryptPrivateKey(password, encryptedKeyHex)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decrypt private key: %w", err)
+	}
+
+	// Step 4: Parse the decrypted private key
+	privateKey, err = crypto.ToECDSA(privateKeyBytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to parse decrypted private key: %w", err)
+	}
+
+	// Get Ethereum address
+	address = crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	fmt.Printf("Private key decrypted successfully for address: %s\n", address)
+
+	return privateKey, address, nil
+}
+
+// validateEncryptedKeyFormat validates the format of an encrypted private key
+func validateEncryptedKeyFormat(encryptedHex string) error {
+	if encryptedHex == "" {
+		return errors.New("encrypted key cannot be empty")
+	}
+
+	// Remove 0x prefix if present
+	hexString := strings.TrimPrefix(encryptedHex, "0x")
+	hexString = strings.TrimPrefix(hexString, "0X")
+
+	// Check if it's valid hex
+	_, err := hex.DecodeString(hexString)
+	if err != nil {
+		return fmt.Errorf("invalid hex format: %w", err)
+	}
+
+	// Check minimum length (salt + nonce + minimum ciphertext)
+	if len(hexString) < 88 { // 44 bytes minimum = 88 hex chars
+		return errors.New("encrypted key too short - invalid format")
+	}
+
+	return nil
+}
+
+// SignMessageWithPrivateKey signs a message using a private key object
+func SignMessageWithPrivateKey(privateKey *ecdsa.PrivateKey, message string) (string, error) {
+	if privateKey == nil {
+		return "", errors.New("private key cannot be nil")
 	}
 
 	// Hash message with Keccak256
