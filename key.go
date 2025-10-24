@@ -26,8 +26,6 @@ import (
 // privateKeyHex: private key in bytes
 // returns: encrypted data in hex encoding
 func EncryptPrivateKey(password string, privateKey []byte) (string, error) {
-	defer clearBytes(privateKey)
-
 	// 1. Generate random salt (16 bytes)
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
@@ -62,11 +60,6 @@ func EncryptPrivateKey(password string, privateKey []byte) (string, error) {
 	encrypted := append(salt, nonce...)
 	encrypted = append(encrypted, ciphertext...)
 
-	defer clearBytes(encrypted)
-	defer clearBytes(nonce)
-	defer clearBytes(salt)
-	defer clearBytes(key)
-
 	return hex.EncodeToString(encrypted), nil
 }
 
@@ -75,16 +68,11 @@ func EncryptPrivateKey(password string, privateKey []byte) (string, error) {
 // encryptedHex: encrypted data in hex encoding
 // returns: decrypted private key in hex string format
 func DecryptPrivateKey(password string, encryptedHex string) ([]byte, error) {
-	defer clearString(&password)
-	defer clearString(&encryptedHex)
-
 	// 1. Decode hex string
 	encrypted, err := hex.DecodeString(encryptedHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode hex: %w", err)
 	}
-
-	defer clearBytes(encrypted)
 
 	// 2. Minimum required: 16(salt) + 12(nonce) + 16(min ciphertext) = 44 bytes
 	if len(encrypted) < 44 {
@@ -98,8 +86,6 @@ func DecryptPrivateKey(password string, encryptedHex string) ([]byte, error) {
 
 	// 4. Derive key using same parameters
 	key := pbkdf2.Key([]byte(password), salt, 100000, 32, sha256.New)
-
-	defer clearBytes(key)
 
 	// 5. Create AES-256 cipher block
 	block, err := aes.NewCipher(key)
@@ -163,7 +149,7 @@ func ReadPasswordFromTerminal(prompt string, confirm bool) (string, error) {
 	password := string(passwordBytes)
 
 	// Clear the byte slice immediately after use
-	clearBytes(passwordBytes)
+	ClearBytes(passwordBytes)
 
 	// If confirmation is required
 	if confirm {
@@ -173,37 +159,37 @@ func ReadPasswordFromTerminal(prompt string, confirm bool) (string, error) {
 
 		if err != nil {
 			// Clear password before returning error
-			clearString(&password)
+			ClearString(&password)
 			return "", fmt.Errorf("failed to read confirmation: %w", err)
 		}
 
 		confirmPassword := string(confirmBytes)
 
 		// Clear the confirmation byte slice immediately
-		clearBytes(confirmBytes)
+		ClearBytes(confirmBytes)
 
 		// Check if passwords match
 		if password != confirmPassword {
-			clearString(&password)
-			clearString(&confirmPassword)
+			ClearString(&password)
+			ClearString(&confirmPassword)
 			return "", errors.New("passwords do not match")
 		}
 
 		// Clear confirmation password
-		clearString(&confirmPassword)
+		ClearString(&confirmPassword)
 	}
 
 	// Validate password strength
 	if len(password) < 8 {
-		clearString(&password)
+		ClearString(&password)
 		return "", errors.New("password must be at least 8 characters long")
 	}
 
 	return password, nil
 }
 
-// clearBytes securely clears a byte slice from memory
-func clearBytes(b []byte) {
+// ClearBytes securely clears a byte slice from memory
+func ClearBytes(b []byte) {
 	if b == nil {
 		return
 	}
@@ -212,11 +198,11 @@ func clearBytes(b []byte) {
 	}
 }
 
-// clearString securely clears a string from memory
+// ClearString securely clears a string from memory
 // This function attempts to clear the underlying memory of the string
 // Note: Go's string immutability means we can't guarantee complete memory clearing
 // but this is the best we can do to minimize sensitive data exposure
-func clearString(s *string) {
+func ClearString(s *string) {
 	if s == nil || *s == "" {
 		return
 	}
@@ -252,7 +238,7 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 	if err != nil {
 		return "", "", fmt.Errorf("failed to read password: %w", err)
 	}
-	defer clearString(&password)
+	defer ClearString(&password)
 
 	// Step 2: Generate random private key
 	fmt.Println("\nGenerating random private key...")
@@ -263,7 +249,7 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 
 	// Get private key bytes and clear them after use
 	privateKeyBytes := crypto.FromECDSA(privateKey)
-	defer clearBytes(privateKeyBytes)
+	defer ClearBytes(privateKeyBytes)
 
 	// Get Ethereum address
 	address = crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
@@ -283,7 +269,7 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 	if err != nil {
 		return "", "", fmt.Errorf("verification failed - cannot decrypt: %w", err)
 	}
-	defer clearBytes(decryptedKeyBytes)
+	defer ClearBytes(decryptedKeyBytes)
 
 	// Step 5: Compare decrypted key with original
 	if !bytes.Equal(decryptedKeyBytes, privateKeyBytes) {
@@ -314,11 +300,11 @@ func ReadEncryptedPrivateKeyFromTerminal() (privateKey *ecdsa.PrivateKey, addres
 	}
 
 	// Clear the byte slice immediately after use
-	defer clearBytes(encryptedKeyBytes)
+	defer ClearBytes(encryptedKeyBytes)
 
 	// Convert to string and clean whitespace
 	encryptedKeyHex := strings.TrimSpace(string(encryptedKeyBytes))
-	defer clearString(&encryptedKeyHex)
+	defer ClearString(&encryptedKeyHex)
 
 	// Validate encrypted key format
 	if err := validateEncryptedKeyFormat(encryptedKeyHex); err != nil {
@@ -330,7 +316,7 @@ func ReadEncryptedPrivateKeyFromTerminal() (privateKey *ecdsa.PrivateKey, addres
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to read password: %w", err)
 	}
-	defer clearString(&password)
+	defer ClearString(&password)
 
 	// Step 3: Decrypt the private key
 	fmt.Println("Decrypting private key...")
