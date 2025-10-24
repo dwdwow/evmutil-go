@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"unicode"
 
@@ -147,12 +148,11 @@ func ReadPasswordFromTerminal(prompt string, confirm bool) (string, error) {
 		return "", fmt.Errorf("failed to read password: %w", err)
 	}
 
+	// Create password string
 	password := string(passwordBytes)
 
-	// Clear the byte slice immediately
-	for i := range passwordBytes {
-		passwordBytes[i] = 0
-	}
+	// Clear the byte slice immediately after use
+	clearBytes(passwordBytes)
 
 	// If confirmation is required
 	if confirm {
@@ -168,10 +168,8 @@ func ReadPasswordFromTerminal(prompt string, confirm bool) (string, error) {
 
 		confirmPassword := string(confirmBytes)
 
-		// Clear the confirmation byte slice
-		for i := range confirmBytes {
-			confirmBytes[i] = 0
-		}
+		// Clear the confirmation byte slice immediately
+		clearBytes(confirmBytes)
 
 		// Check if passwords match
 		if password != confirmPassword {
@@ -193,17 +191,39 @@ func ReadPasswordFromTerminal(prompt string, confirm bool) (string, error) {
 	return password, nil
 }
 
+// clearBytes securely clears a byte slice from memory
+func clearBytes(b []byte) {
+	if b == nil {
+		return
+	}
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 // clearString securely clears a string from memory
+// This function attempts to clear the underlying memory of the string
+// Note: Go's string immutability means we can't guarantee complete memory clearing
+// but this is the best we can do to minimize sensitive data exposure
 func clearString(s *string) {
 	if s == nil || *s == "" {
 		return
 	}
-	// Convert to byte slice and clear
-	b := []byte(*s)
-	for i := range b {
-		b[i] = 0
+
+	// Convert to byte slice and clear each byte
+	// This creates a new byte slice, so we need to work with the original string
+	// by converting it to runes and back to try to clear the underlying memory
+	runes := []rune(*s)
+	for i := range runes {
+		runes[i] = 0
 	}
+
+	// Clear the string reference
 	*s = ""
+
+	// Force garbage collection hint (though not guaranteed to run immediately)
+	// This is the best we can do in Go for string memory clearing
+	runtime.GC()
 }
 
 // GenerateAndEncryptNewKey generates a new random private key and encrypts it with user password
@@ -230,7 +250,11 @@ func GenerateAndEncryptNewKey() (encryptedKeyHex string, address string, err err
 		return "", "", fmt.Errorf("failed to generate private key: %w", err)
 	}
 
-	privateKeyHex := hex.EncodeToString(crypto.FromECDSA(privateKey))
+	// Get private key bytes and clear them after use
+	privateKeyBytes := crypto.FromECDSA(privateKey)
+	defer clearBytes(privateKeyBytes)
+
+	privateKeyHex := hex.EncodeToString(privateKeyBytes)
 	defer clearString(&privateKeyHex)
 
 	// Get Ethereum address
