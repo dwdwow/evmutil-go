@@ -362,6 +362,30 @@ func validateEncryptedKeyFormat(encryptedHex string) error {
 	return nil
 }
 
+// PrivateKeyFromWallet extracts the private key bytes from a wallet (ECDSA private key) object
+// Returns the private key as a byte slice (32 bytes)
+func PrivateKeyFromWallet(privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	if privateKey == nil {
+		return nil, errors.New("private key cannot be nil")
+	}
+
+	// Extract private key bytes (32 bytes)
+	privateKeyBytes := crypto.FromECDSA(privateKey)
+	return privateKeyBytes, nil
+}
+
+// PrivateKeyHexFromWallet extracts the private key from a wallet (ECDSA private key) object
+// Returns the private key as a hex string (64 hex characters, without 0x prefix)
+func PrivateKeyHexFromWallet(privateKey *ecdsa.PrivateKey) (string, error) {
+	if privateKey == nil {
+		return "", errors.New("private key cannot be nil")
+	}
+
+	// Extract private key bytes and convert to hex
+	privateKeyBytes := crypto.FromECDSA(privateKey)
+	return hex.EncodeToString(privateKeyBytes), nil
+}
+
 // SignMessageWithPrivateKey signs a message using a private key object
 func SignMessageWithPrivateKey(privateKey *ecdsa.PrivateKey, message string) (string, error) {
 	if privateKey == nil {

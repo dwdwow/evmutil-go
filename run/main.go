@@ -19,4 +19,11 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("Address:", address)
+
+	// privateKeyHex, err := evmutil.PrivateKeyHexFromWallet(wallet)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// fmt.Println("Private key hex:", privateKeyHex)
 }
